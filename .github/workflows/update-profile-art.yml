@@ -13,6 +13,9 @@ name: Update profile art
 permissions:
   contents: write
 
+env:
+  GH_TOKEN: ${{ secrets.PROFILE_TOKEN }}
+
 jobs:
   heatmap:
     runs-on: ubuntu-latest
@@ -26,7 +29,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r scripts/requirements.txt
 
-      - name: Scrape real contribution data (no auth needed)
+      # profile activity is private, so the public calendar is empty: count
+      # commits across private repos instead. needs a fine-grained PAT with
+      # read access to all repos (Contents + Metadata), saved as the
+      # PROFILE_TOKEN repo secret. without it, the step is skipped.
+      - name: Count real commits across all repos
+        if: env.GH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.PROFILE_TOKEN }}
         run: python scripts/fetch_contributions.py
 
       - name: Render animated contribution graph SVG

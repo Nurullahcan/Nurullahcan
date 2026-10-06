@@ -40,6 +40,12 @@ GAMMA = 1.18          # >1 brightens mids -> face lands in sparser chars
 SHARPEN = False
 WHITE_FLOOR = 0.80    # luminance above this is forced to blank (space)
 
+# POSITIVE: for a real photo prepped onto black (prep_photo.py). bright skin ->
+# dense chars (bright ink on the dark terminal), black background -> blank.
+POSITIVE = os.environ.get("POSITIVE", "1") == "1"
+BLACK_FLOOR = 0.06    # positive mode: luminance below this is blank
+POS_GAMMA = 0.85      # <1 lifts darker hair/beard into visible chars
+
 PAD = 20
 TITLEBAR_H = 30
 STATUS_H = 30
@@ -75,6 +81,13 @@ for y in range(ROWS):
     chars = []
     for x in range(COLS):
         lum = px[x, y] / 255.0
+        if POSITIVE:
+            if lum < BLACK_FLOOR:
+                chars.append(" ")
+                continue
+            idx = int(pow(lum, POS_GAMMA) * (len(RAMP) - 1) + 0.5)
+            chars.append(RAMP[max(1, min(len(RAMP) - 1, idx))])
+            continue
         lum = pow(lum, GAMMA)
         if lum >= WHITE_FLOOR:
             chars.append(" ")

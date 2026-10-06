@@ -66,7 +66,7 @@ def build_grid(days):
         weekday = (date.weekday() + 1) % 7
         while len(col) < weekday:
             col.append(None)
-        col.append((d["date"], d["count"], level_for(d["count"])))
+        col.append((d["date"], d["count"], d["level"] if "level" in d else level_for(d["count"])))
         if len(col) == 7:
             grid.append(col)
             col = []

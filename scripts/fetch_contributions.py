@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-Scrape real daily contribution counts from GitHub's public, unauthenticated
-contributions endpoint (the same fragment the profile page itself uses) and
-write data/contributions.json with the raw days plus derived stats
-(current streak, longest streak, best day, monthly totals).
+Collect real daily contribution counts and write data/contributions.json with
+the raw days plus derived stats (current streak, longest streak, best day,
+monthly totals).
 
-No token, no auth, no GraphQL -- just the public HTML GitHub already serves.
+Two sources:
+  * GH_TOKEN set  -> count the user's own commits across every repo the token
+                     can see (private repos included) via the REST API. This
+                     is what fills the graph when profile activity is private.
+  * no token      -> scrape GitHub's public contributions endpoint.
+
 Run daily by .github/workflows/update-profile-art.yml.
 """
 import datetime
@@ -18,11 +22,67 @@ import requests
 from bs4 import BeautifulSoup
 
 USERNAME = os.environ.get("GH_PROFILE_USER", "Nurullahcan")
+TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+TZ = datetime.timezone(datetime.timedelta(hours=3))  # Europe/Istanbul, no DST
 URL = f"https://github.com/users/{USERNAME}/contributions"
 OUT_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "contributions.json")
 
 
+def api_get_all(session, url, params=None):
+    out = []
+    while url:
+        r = session.get(url, params=params, timeout=30)
+        if r.status_code == 409:  # empty repository
+            return out
+        r.raise_for_status()
+        out.extend(r.json())
+        url, params = r.links.get("next", {}).get("url"), None
+    return out
+
+
+def fetch_days_api():
+    s = requests.Session()
+    s.headers.update({"Authorization": f"Bearer {TOKEN}",
+                      "Accept": "application/vnd.github+json",
+                      "User-Agent": "profile-readme-bot/1.0"})
+    today = datetime.datetime.now(TZ).date()
+    start = today - datetime.timedelta(days=365)
+    since = datetime.datetime.combine(start, datetime.time(), TZ).isoformat()
+
+    repos = api_get_all(s, "https://api.github.com/user/repos",
+                        {"per_page": 100, "affiliation": "owner,collaborator,organization_member"})
+    counts, seen = {}, set()
+    for repo in repos:
+        if repo.get("fork"):
+            continue
+        commits = api_get_all(s, f"https://api.github.com/repos/{repo['full_name']}/commits",
+                              {"author": USERNAME, "since": since, "per_page": 100})
+        for c in commits:
+            if c["sha"] in seen:
+                continue
+            seen.add(c["sha"])
+            when = datetime.datetime.fromisoformat(c["commit"]["author"]["date"].replace("Z", "+00:00"))
+            key = when.astimezone(TZ).date().isoformat()
+            counts[key] = counts.get(key, 0) + 1
+    print(f"{len(repos)} repos, {len(seen)} commits since {start}")
+
+    days = []
+    d = start
+    while d <= today:
+        days.append({"date": d.isoformat(), "count": counts.get(d.isoformat(), 0)})
+        d += datetime.timedelta(days=1)
+
+    # github-style levels: quartiles of the non-zero days
+    nz = sorted(x["count"] for x in days if x["count"])
+    cuts = [nz[int(len(nz) * q)] for q in (0.25, 0.5, 0.75)] if nz else [1, 1, 1]
+    for x in days:
+        x["level"] = 0 if not x["count"] else 1 + sum(x["count"] > c for c in cuts)
+    return days
+
+
 def fetch_days():
+    if TOKEN:
+        return fetch_days_api()
     resp = requests.get(URL, headers={"User-Agent": "profile-readme-bot/1.0"}, timeout=30)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -99,7 +159,7 @@ def build_data(days):
 
     return {
         "username": USERNAME,
-        "generated_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "range": {"start": days[0]["date"], "end": days[-1]["date"]},
         "total_contributions": total,
         "active_days": active_days,
